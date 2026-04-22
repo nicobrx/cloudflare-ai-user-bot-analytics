@@ -35,6 +35,7 @@ CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
   date                  DATE   NOT NULL,
   user_agent            STRING NOT NULL,
   verified_bot_category STRING NOT NULL,
+  path                  STRING NOT NULL,
   requests              INT64
 )
 PARTITION BY date;
@@ -49,6 +50,7 @@ CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
   date                  DATE   NOT NULL,
   user_agent            STRING NOT NULL,
   verified_bot_category STRING NOT NULL,
+  path                  STRING NOT NULL,
   requests              INT64
 )
 PARTITION BY date;
@@ -76,19 +78,29 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run for yesterday (default):
+**Initial backfill** — load all the data Cloudflare still has (~7 days on Pro, leaving a day of margin under the 8-day retention limit):
+
+```bash
+python extract.py --days 7
+```
+
+**Daily run** — fills yesterday's partition plus any gaps from the last 7 days:
 
 ```bash
 python extract.py
 ```
 
-Or pass a specific date:
+**Force-reload a specific date** — useful if you need to replay one day:
 
 ```bash
-python extract.py 2026-04-20
+python extract.py --date 2026-04-20
 ```
 
-The script is safe to re-run — it replaces the partition for the target date each time.
+All dates in this pipeline — CLI arguments, BigQuery partitions, and Cloudflare API filters — are interpreted in UTC, matching Cloudflare's analytics clock.
+
+Each run checks BigQuery for which dates in the lookback window already have data and only fetches the missing ones, so re-runs are cheap and a failed run is automatically retried on the next run — no data gaps.
+
+> **Retention limit:** Cloudflare's `httpRequestsAdaptiveGroups` dataset is limited by plan tier — roughly 8 days on Pro, 30 days on Business, 6 months on Enterprise. Queries older than the limit are rejected by the API. For long-term history, schedule a daily run so data accumulates in your BigQuery table beyond Cloudflare's retention window.
 
 ---
 
@@ -128,6 +140,19 @@ FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 WHERE date = '2026-04-20'
 GROUP BY 1
 ORDER BY requests DESC;
+```
+
+**Top pages visited by AI assistants:**
+
+```sql
+SELECT
+  path,
+  SUM(requests) AS requests
+FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
+WHERE verified_bot_category = 'AI Assistant'
+GROUP BY 1
+ORDER BY requests DESC
+LIMIT 20;
 ```
 
 ---
