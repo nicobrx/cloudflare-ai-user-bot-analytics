@@ -8,7 +8,6 @@ from datetime import date, timedelta
 import requests
 from dotenv import load_dotenv
 from google.cloud import bigquery
-
 load_dotenv()
 
 CF_API_TOKEN = os.environ["CLOUDFLARE_API_TOKEN"]
@@ -16,36 +15,26 @@ CF_ZONE_ID = os.environ["CLOUDFLARE_ZONE_ID"]
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_TABLE = f"{GCP_PROJECT_ID}.cloudflare_analytics.user_agent_requests_daily"
 
-AI_BOT_FAMILIES = ["Claude-User", "ChatGPT-User", "Perplexity-User"]
-
 SCHEMA = [
-    bigquery.SchemaField("date", "DATE"),
-    bigquery.SchemaField("user_agent", "STRING"),
-    bigquery.SchemaField("bot_family", "STRING"),
+    bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
+    bigquery.SchemaField("user_agent", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("verified_bot_category", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("requests", "INT64"),
-    bigquery.SchemaField("page_views", "INT64"),
-    bigquery.SchemaField("uniques", "INT64"),
 ]
 
 QUERY = """
-query ($zoneTag: string, $startDate: Date, $endDate: Date) {
+query ($zoneTag: String, $startDate: Date, $endDate: Date) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
       httpRequestsAdaptiveGroups(
         filter: {date_geq: $startDate, date_leq: $endDate}
-        orderBy: [clientRequestUserAgent_ASC]
         limit: 10000
       ) {
+        count
         dimensions {
           date
-          clientRequestUserAgent
-        }
-        sum {
-          requests
-          pageViews
-        }
-        uniq {
-          uniques
+          userAgent
+          verifiedBotCategory
         }
       }
     }
@@ -68,30 +57,25 @@ def fetch(target_date: str) -> list[dict]:
         },
     )
     resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     body = resp.json()
     if errors := body.get("errors"):
         raise RuntimeError(f"Cloudflare API errors: {errors}")
     return body["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"]
 
 
-def classify_bot_family(user_agent: str) -> str | None:
-    for family in AI_BOT_FAMILIES:
-        if family in user_agent:
-            return family
-    return None
-
-
 def to_rows(groups: list[dict]) -> list[dict]:
     rows = []
     for g in groups:
-        ua = g["dimensions"]["clientRequestUserAgent"] or ""
+        category = g["dimensions"]["verifiedBotCategory"] or ""
+        if not category:
+            continue
         rows.append({
             "date": g["dimensions"]["date"],
-            "user_agent": ua,
-            "bot_family": classify_bot_family(ua),
-            "requests": g["sum"]["requests"],
-            "page_views": g["sum"]["pageViews"],
-            "uniques": g["uniq"]["uniques"],
+            "user_agent": g["dimensions"]["userAgent"] or "",
+            "verified_bot_category": category,
+            "requests": g["count"],
         })
     return rows
 
@@ -118,8 +102,7 @@ def main() -> None:
     print(f"  {len(groups)} user agent groups")
 
     rows = to_rows(groups)
-    ai_rows = sum(1 for r in rows if r["bot_family"])
-    print(f"  {ai_rows} AI user bot rows")
+    print(f"  {len(rows)} verified bot rows")
 
     if rows:
         load_to_bq(rows, target_date)

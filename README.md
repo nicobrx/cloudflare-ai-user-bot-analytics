@@ -1,6 +1,8 @@
-# Cloudflare AI User Bot Analytics
+# Cloudflare Bot Analytics
 
-Fetches daily Cloudflare HTTP request data via the GraphQL Analytics API and loads it into BigQuery. Reports requests, page views, and approximate unique IPs per user agent per day — with AI user-triggered fetchers (Claude-User, ChatGPT-User, Perplexity-User) classified by bot family.
+Fetches daily Cloudflare HTTP request data via the GraphQL Analytics API and loads it into BigQuery. Reports request counts per user agent per day, filtered to bots that Cloudflare has verified via reverse-DNS lookup of the client IP.
+
+AI user-triggered fetchers (`Claude-User`, `ChatGPT-User`, `Perplexity-User`) show up under the `AI Assistant` verified bot category — they're fetched by servers at OpenAI / Anthropic / Perplexity when their models need to retrieve a URL for a user's prompt, so their client IPs belong to those companies and get verified.
 
 **Pipeline:** Cloud Scheduler → Python script → Cloudflare GraphQL API → BigQuery
 
@@ -10,7 +12,7 @@ Fetches daily Cloudflare HTTP request data via the GraphQL Analytics API and loa
 
 - A Cloudflare Pro (or higher) account
 - A GCP project with the BigQuery API enabled
-- Python 3.11+
+- Python 3.9+
 - `gcloud` CLI authenticated (`gcloud auth application-default login`)
 
 ---
@@ -30,12 +32,10 @@ bq mk --location=US YOUR_PROJECT:cloudflare_analytics
 ```sql
 CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 (
-  date       DATE   NOT NULL,
-  user_agent STRING NOT NULL,
-  bot_family STRING,
-  requests   INT64,
-  page_views INT64,
-  uniques    INT64
+  date                  DATE   NOT NULL,
+  user_agent            STRING NOT NULL,
+  verified_bot_category STRING NOT NULL,
+  requests              INT64
 )
 PARTITION BY date;
 ```
@@ -46,25 +46,16 @@ Run this in the [BigQuery console](https://console.cloud.google.com/bigquery) or
 bq query --use_legacy_sql=false '
 CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 (
-  date       DATE   NOT NULL,
-  user_agent STRING NOT NULL,
-  bot_family STRING,
-  requests   INT64,
-  page_views INT64,
-  uniques    INT64
+  date                  DATE   NOT NULL,
+  user_agent            STRING NOT NULL,
+  verified_bot_category STRING NOT NULL,
+  requests              INT64
 )
 PARTITION BY date;
 '
 ```
 
-The `bot_family` column is populated for known AI user-triggered fetchers and `NULL` for all others:
-
-| `user_agent` contains | `bot_family` |
-|---|---|
-| `Claude-User` | `Claude-User` |
-| `ChatGPT-User` | `ChatGPT-User` |
-| `Perplexity-User` | `Perplexity-User` |
-| anything else | `NULL` |
+`verified_bot_category` is Cloudflare's classification of the bot (e.g. `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, `Academic Research`). Rows are only written when Cloudflare has verified the bot's identity via reverse-DNS of the client IP; unverified traffic is discarded.
 
 ---
 
@@ -101,28 +92,51 @@ The script is safe to re-run — it replaces the partition for the target date e
 
 ---
 
+## Exploring raw requests in Cloudflare Log Search
+
+In the Cloudflare dashboard, go to **Analytics & Logs → Log Search** and use this filter to see the raw AI user bot requests the script aggregates:
+
+```
+ClientRequestUserAgent ~ "Claude-User|ChatGPT-User|Perplexity-User"
+```
+
+`~` matches on a regular expression, so this returns any request whose user agent contains any of the three bot identifiers.
+
+---
+
 ## Querying the data
 
-**AI user bot traffic by day:**
+**AI user-triggered fetcher traffic by day:**
 
 ```sql
 SELECT
   date,
-  bot_family,
-  SUM(requests)   AS requests,
-  SUM(page_views) AS page_views,
-  SUM(uniques)    AS uniques
+  SUM(requests) AS requests
 FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
-WHERE bot_family IS NOT NULL
-GROUP BY 1, 2
-ORDER BY 1 DESC, 2;
+WHERE verified_bot_category = 'AI Assistant'
+GROUP BY 1
+ORDER BY 1 DESC;
 ```
 
-**All user agents for a given day:**
+**All bot traffic for a given day, grouped by category:**
 
 ```sql
-SELECT *
+SELECT
+  verified_bot_category,
+  SUM(requests) AS requests
 FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 WHERE date = '2026-04-20'
+GROUP BY 1
 ORDER BY requests DESC;
 ```
+
+---
+
+## Notes on metric discrepancies
+
+Numbers from this table won't exactly match what you see in the Cloudflare dashboard. A few things to be aware of:
+
+- **Only verified bots are stored.** Cloudflare classifies a request's bot identity via reverse-DNS on the client IP. If the IP doesn't belong to the claimed bot operator (e.g. a request carrying the `ChatGPT-User` UA from an IP outside OpenAI's range), Cloudflare leaves `verifiedBotCategory` empty. This pipeline drops those rows because they're almost always either spoofed user agents or noise. The tradeoff: if an AI operator rotates to a new IP range before Cloudflare updates its verified list, you may briefly miss a small amount of legitimate traffic.
+- **Only `requests` (count) is exported.** Cloudflare's `httpRequestsAdaptiveGroups.sum.visits` field behaved inconsistently at this granularity, and the Cloudflare dashboard computes "visits" by applying filters to the same `count` field rather than using `sum.visits`. To avoid confusion this pipeline only stores a raw request count.
+- **Adaptive sampling.** The `httpRequestsAdaptiveGroups` dataset is sampled at the edge for high-volume zones. Small sites are usually unsampled, but counts may still drift slightly from pre-aggregated datasets used elsewhere in Cloudflare.
+- **Even the Cloudflare dashboard is not perfectly self-consistent.** Switching between "requests" and "visits" metrics has been observed to produce counterintuitive totals (e.g. requests < visits for the same filter). Treat dashboard numbers as approximate.
