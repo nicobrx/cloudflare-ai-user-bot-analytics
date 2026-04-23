@@ -21,6 +21,14 @@ CF_ZONE_ID = os.environ["CLOUDFLARE_ZONE_ID"]
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_TABLE = f"{GCP_PROJECT_ID}.cloudflare_analytics.user_agent_requests_daily"
 
+ASSET_EXTENSIONS = {
+    ".css", ".js", ".mjs", ".map",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif", ".bmp", ".tiff",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp4", ".mp3", ".webm", ".ogg", ".wav", ".m4a", ".mov", ".avi",
+    ".zip", ".tar", ".gz", ".rar", ".7z",
+}
+
 SCHEMA = [
     bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
     bigquery.SchemaField("user_agent", "STRING", mode="REQUIRED"),
@@ -71,17 +79,29 @@ def fetch(target_date: str) -> list[dict]:
     return body["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"]
 
 
+def is_content_path(path: str) -> bool:
+    """True if the path looks like a page or document, not a static asset."""
+    filename = path.rsplit("/", 1)[-1].lower()
+    if "." not in filename:
+        return True
+    ext = "." + filename.rsplit(".", 1)[-1]
+    return ext not in ASSET_EXTENSIONS
+
+
 def to_rows(groups: list[dict]) -> list[dict]:
     rows = []
     for g in groups:
         category = g["dimensions"]["verifiedBotCategory"] or ""
         if not category:
             continue
+        path = g["dimensions"]["clientRequestPath"] or ""
+        if not is_content_path(path):
+            continue
         rows.append({
             "date": g["dimensions"]["date"],
             "user_agent": g["dimensions"]["userAgent"] or "",
             "verified_bot_category": category,
-            "path": g["dimensions"]["clientRequestPath"] or "",
+            "path": path,
             "requests": g["count"],
         })
     return rows
@@ -116,6 +136,8 @@ def dates_to_process(client: bigquery.Client, args: argparse.Namespace) -> list[
     end = datetime.now(timezone.utc).date() - timedelta(days=1)
     start = end - timedelta(days=args.days - 1)
     expected = {start + timedelta(days=i) for i in range((end - start).days + 1)}
+    if args.force:
+        return sorted(expected)
     missing = expected - existing_dates(client, start, end)
     return sorted(missing)
 
@@ -133,6 +155,11 @@ def parse_args() -> argparse.Namespace:
         "--date",
         type=str,
         help="Force-reload a specific date (YYYY-MM-DD), overwriting any existing partition",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="With --days, reload every date in the window instead of only missing ones",
     )
     return p.parse_args()
 

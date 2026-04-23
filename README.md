@@ -59,6 +59,8 @@ PARTITION BY date;
 
 `verified_bot_category` is Cloudflare's classification of the bot (e.g. `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, `Academic Research`). Rows are only written when Cloudflare has verified the bot's identity via reverse-DNS of the client IP; unverified traffic is discarded.
 
+Requests for static assets (`.css`, `.js`, images, fonts, videos, archives) are filtered out and never written — the table only stores requests for pages and document-like content (HTML, PDF, TXT, XML, JSON, paths with no extension, etc.). The exclusion list lives in `ASSET_EXTENSIONS` in [extract.py](extract.py) and can be edited there.
+
 ---
 
 ## Step 2 — Get your Cloudflare credentials
@@ -94,6 +96,12 @@ python extract.py
 
 ```bash
 python extract.py --date 2026-04-20
+```
+
+**Force-reload the whole window** — rewrites every partition in the lookback, e.g. after changing the filter logic:
+
+```bash
+python extract.py --days 7 --force
 ```
 
 All dates in this pipeline — CLI arguments, BigQuery partitions, and Cloudflare API filters — are interpreted in UTC, matching Cloudflare's analytics clock.
