@@ -112,6 +112,117 @@ Each run checks BigQuery for which dates in the lookback window already have dat
 
 ---
 
+## Step 4 — Deploy to GCP (optional)
+
+Run the script on a daily schedule using **Cloud Run Jobs** + **Cloud Scheduler**. All commands below assume `gcloud` is authenticated and `gcloud config set project YOUR_PROJECT` has already been run.
+
+### 4.1 — Enable the required APIs
+
+```bash
+gcloud services enable \
+  run.googleapis.com \
+  cloudscheduler.googleapis.com \
+  cloudbuild.googleapis.com \
+  secretmanager.googleapis.com \
+  artifactregistry.googleapis.com
+```
+
+### 4.2 — Store the Cloudflare API token in Secret Manager
+
+```bash
+source .env
+printf "%s" "$CLOUDFLARE_API_TOKEN" | gcloud secrets create cloudflare-api-token --data-file=-
+```
+
+The Zone ID and project ID are non-sensitive and will be set as plain environment variables on the job.
+
+### 4.3 — Create the service account
+
+This account is used by both the Cloud Run Job (to read the secret and write to BigQuery) and Cloud Scheduler (to invoke the job).
+
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+SA_EMAIL="cf-analytics-extractor@${PROJECT_ID}.iam.gserviceaccount.com"
+REGION="us-central1"
+
+gcloud iam service-accounts create cf-analytics-extractor \
+  --display-name="Cloudflare Analytics Extractor"
+
+# Read + write BigQuery data
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/bigquery.dataEditor"
+
+# Run BigQuery load/query jobs
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/bigquery.jobUser"
+
+# Read the Cloudflare API token secret
+gcloud secrets add-iam-policy-binding cloudflare-api-token \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+### 4.4 — Deploy the Cloud Run Job
+
+This builds the container from the `Dockerfile` via Cloud Build and deploys it as a Cloud Run Job:
+
+```bash
+gcloud run jobs deploy cf-analytics-extractor \
+  --source=. \
+  --region="${REGION}" \
+  --service-account="${SA_EMAIL}" \
+  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID}" \
+  --set-secrets="CLOUDFLARE_API_TOKEN=cloudflare-api-token:latest"
+```
+
+Run the job once manually to verify everything works:
+
+```bash
+gcloud run jobs execute cf-analytics-extractor --region="${REGION}" --wait
+```
+
+### 4.5 — Schedule daily runs
+
+Allow the service account to invoke the job, then create the Cloud Scheduler entry:
+
+```bash
+gcloud run jobs add-iam-policy-binding cf-analytics-extractor \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker"
+
+gcloud scheduler jobs create http cf-analytics-daily \
+  --location="${REGION}" \
+  --schedule="0 2 * * *" \
+  --time-zone="UTC" \
+  --http-method=POST \
+  --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/cf-analytics-extractor:run" \
+  --oauth-service-account-email="${SA_EMAIL}"
+```
+
+The job will run every day at 02:00 UTC. It uses the default `--days 7` lookback, so any failed run self-heals on the next execution.
+
+### Updating the deployed job
+
+After any change to `extract.py`, `requirements.txt`, or the `Dockerfile`, redeploy with:
+
+```bash
+gcloud run jobs deploy cf-analytics-extractor --source=. --region="${REGION}"
+```
+
+To run an ad-hoc backfill against the deployed job (e.g. after changing filter logic):
+
+```bash
+gcloud run jobs execute cf-analytics-extractor \
+  --region="${REGION}" \
+  --wait \
+  --args="--days,7,--force"
+```
+
+---
+
 ## Exploring raw requests in Cloudflare Log Search
 
 In the Cloudflare dashboard, go to **Analytics & Logs → Log Search** and use this filter to see the raw AI user bot requests the script aggregates:
