@@ -66,7 +66,16 @@ PARTITION BY date;
 
 The two classification columns are independent and either, both, or neither can be populated for a given request:
 
-- **`bot_family`** is matched by the script from the user agent string against a curated list in [extract.py](extract.py) (the `BOT_FAMILIES` dict). The list covers AI user-triggered fetchers, AI training crawlers, AI search bots, and traditional search engines. To track a new bot, add a `(pattern → family)` entry to that dict.
+- **`bot_family`** is matched by the script from the user agent string against a curated list in [extract.py](extract.py) (the `BOT_FAMILIES` dict). The list currently covers:
+
+  | Category | Bots |
+  |---|---|
+  | AI user-triggered fetchers | `Claude-User`, `ChatGPT-User`, `Perplexity-User` |
+  | AI training crawlers | `GPTBot`, `ClaudeBot` (matches `ClaudeBot` and `anthropic-ai`), `PerplexityBot`, `Google-Extended`, `Applebot-Extended`, `Meta-ExternalAgent`, `Bytespider`, `Amazonbot`, `cohere-ai`, `Diffbot`, `YouBot`, `CCBot` |
+  | AI search bots | `OAI-SearchBot` |
+  | Traditional search engines | `Googlebot`, `Bingbot`, `DuckDuckBot`, `YandexBot`, `Baiduspider`, `Applebot`, `Slurp` |
+
+  To track a new bot, add a `(pattern → family)` entry to the dict in [extract.py](extract.py). Matching is case-insensitive and substring-based, so list more specific patterns (e.g. `Applebot-Extended`) before any patterns they contain (e.g. `Applebot`).
 - **`verified_bot_category`** comes from Cloudflare's [public verified-bot list](https://radar.cloudflare.com/bots#verified-bots). Cloudflare only verifies bots whose operators have explicitly registered with the program (publishing IP ranges or domain claims); for those, Cloudflare reverse-DNS-checks each request's client IP and tags it with a category like `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, or `Academic Research`. Bot UAs whose operators have not registered (which currently includes Claude-User and Perplexity-User) are never tagged, regardless of source IP.
 
 **Why both?** Cloudflare's verified-bot program is opt-in for operators, so its coverage of newer AI fetchers is incomplete. A diagnostic against the API showed:
