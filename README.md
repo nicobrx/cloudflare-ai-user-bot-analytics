@@ -1,8 +1,11 @@
 # Cloudflare Bot Analytics
 
-Fetches daily Cloudflare HTTP request data via the GraphQL Analytics API and loads it into BigQuery. Reports request counts per user agent per day, filtered to bots that Cloudflare has verified via reverse-DNS lookup of the client IP.
+Fetches daily Cloudflare HTTP request data via the GraphQL Analytics API and loads it into BigQuery. Reports request counts per user agent per day for bots identified by either:
 
-AI user-triggered fetchers (`Claude-User`, `ChatGPT-User`, `Perplexity-User`) show up under the `AI Assistant` verified bot category — they're fetched by servers at OpenAI / Anthropic / Perplexity when their models need to retrieve a URL for a user's prompt, so their client IPs belong to those companies and get verified.
+- a project-maintained list of known bot user-agent tokens (the `bot_family` column), or
+- Cloudflare's verified-bot classification, which reverse-DNS-checks the client IP against the bot operator's domains (the `verified_bot_category` column)
+
+A row is written if either field is populated; non-bot traffic is discarded.
 
 **Pipeline:** Cloud Scheduler → Python script → Cloudflare GraphQL API → BigQuery
 
@@ -34,7 +37,8 @@ CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 (
   date                  DATE   NOT NULL,
   user_agent            STRING NOT NULL,
-  verified_bot_category STRING NOT NULL,
+  bot_family            STRING,
+  verified_bot_category STRING,
   path                  STRING NOT NULL,
   requests              INT64
 )
@@ -49,7 +53,8 @@ CREATE TABLE `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
 (
   date                  DATE   NOT NULL,
   user_agent            STRING NOT NULL,
-  verified_bot_category STRING NOT NULL,
+  bot_family            STRING,
+  verified_bot_category STRING,
   path                  STRING NOT NULL,
   requests              INT64
 )
@@ -57,7 +62,24 @@ PARTITION BY date;
 '
 ```
 
-`verified_bot_category` is Cloudflare's classification of the bot (e.g. `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, `Academic Research`). Rows are only written when Cloudflare has verified the bot's identity via reverse-DNS of the client IP; unverified traffic is discarded.
+### Classification: `bot_family` and `verified_bot_category`
+
+The two classification columns are independent and either, both, or neither can be populated for a given request:
+
+- **`bot_family`** is matched by the script from the user agent string against a curated list in [extract.py](extract.py) (the `BOT_FAMILIES` dict). The list covers AI user-triggered fetchers, AI training crawlers, AI search bots, and traditional search engines. To track a new bot, add a `(pattern → family)` entry to that dict.
+- **`verified_bot_category`** comes from Cloudflare's [public verified-bot list](https://radar.cloudflare.com/bots#verified-bots). Cloudflare only verifies bots whose operators have explicitly registered with the program (publishing IP ranges or domain claims); for those, Cloudflare reverse-DNS-checks each request's client IP and tags it with a category like `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, or `Academic Research`. Bot UAs whose operators have not registered (which currently includes Claude-User and Perplexity-User) are never tagged, regardless of source IP.
+
+**Why both?** Cloudflare's verified-bot program is opt-in for operators, so its coverage of newer AI fetchers is incomplete. A diagnostic against the API showed:
+
+| User agent | % verified as `AI Assistant` |
+|---|---|
+| ChatGPT-User | ~50% |
+| Claude-User | 0% |
+| Perplexity-User | 0% |
+
+OpenAI has registered ChatGPT-User but apparently not all of its egress IP ranges; Anthropic and Perplexity haven't registered their `-User` fetchers at all. Maintaining our own `bot_family` list ensures these fetchers are still captured, while `verified_bot_category` provides reliable, IP-confirmed coverage of bots that *are* registered (Googlebot, Bingbot, GPTBot, etc.) plus any verified bots not in our list.
+
+### Static asset filtering
 
 Requests for static assets (`.css`, `.js`, images, fonts, videos, archives) are filtered out and never written — the table only stores requests for pages and document-like content (HTML, PDF, TXT, XML, JSON, paths with no extension, etc.). The exclusion list lives in `ASSET_EXTENSIONS` in [extract.py](extract.py) and can be edited there.
 
@@ -242,33 +264,34 @@ ClientRequestUserAgent ~ "Claude-User|ChatGPT-User|Perplexity-User"
 ```sql
 SELECT
   date,
+  bot_family,
   SUM(requests) AS requests
 FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
-WHERE verified_bot_category = 'AI Assistant'
-GROUP BY 1
-ORDER BY 1 DESC;
+WHERE bot_family IN ('Claude-User', 'ChatGPT-User', 'Perplexity-User')
+GROUP BY 1, 2
+ORDER BY 1 DESC, 2;
 ```
 
-**All bot traffic for a given day, grouped by category:**
+**All bot traffic for a given day, grouped by family:**
 
 ```sql
 SELECT
-  verified_bot_category,
+  COALESCE(bot_family, verified_bot_category) AS bot,
   SUM(requests) AS requests
 FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
-WHERE date = '2026-04-20'
+WHERE date = '2026-04-25'
 GROUP BY 1
 ORDER BY requests DESC;
 ```
 
-**Top pages visited by AI assistants:**
+**Top pages visited by AI user-triggered fetchers:**
 
 ```sql
 SELECT
   path,
   SUM(requests) AS requests
 FROM `YOUR_PROJECT.cloudflare_analytics.user_agent_requests_daily`
-WHERE verified_bot_category = 'AI Assistant'
+WHERE bot_family IN ('Claude-User', 'ChatGPT-User', 'Perplexity-User')
 GROUP BY 1
 ORDER BY requests DESC
 LIMIT 20;
@@ -280,7 +303,7 @@ LIMIT 20;
 
 Numbers from this table won't exactly match what you see in the Cloudflare dashboard. A few things to be aware of:
 
-- **Only verified bots are stored.** Cloudflare classifies a request's bot identity via reverse-DNS on the client IP. If the IP doesn't belong to the claimed bot operator (e.g. a request carrying the `ChatGPT-User` UA from an IP outside OpenAI's range), Cloudflare leaves `verifiedBotCategory` empty. This pipeline drops those rows because they're almost always either spoofed user agents or noise. The tradeoff: if an AI operator rotates to a new IP range before Cloudflare updates its verified list, you may briefly miss a small amount of legitimate traffic.
+- **Some `bot_family`-only rows are unverified.** When `verified_bot_category` is NULL but `bot_family` is set, the row matched our user-agent list but the bot's operator hasn't registered with [Cloudflare's verified-bot program](https://radar.cloudflare.com/bots#verified-bots), so Cloudflare didn't IP-check it. This is the norm for Claude-User and Perplexity-User. Those rows can also include UA-spoofed traffic — if you only want high-confidence rows, filter on `verified_bot_category IS NOT NULL`.
 - **Only `requests` (count) is exported.** Cloudflare's `httpRequestsAdaptiveGroups.sum.visits` field behaved inconsistently at this granularity, and the Cloudflare dashboard computes "visits" by applying filters to the same `count` field rather than using `sum.visits`. To avoid confusion this pipeline only stores a raw request count.
 - **Adaptive sampling.** The `httpRequestsAdaptiveGroups` dataset is sampled at the edge for high-volume zones. Small sites are usually unsampled, but counts may still drift slightly from pre-aggregated datasets used elsewhere in Cloudflare.
 - **Even the Cloudflare dashboard is not perfectly self-consistent.** Switching between "requests" and "visits" metrics has been observed to produce counterintuitive totals (e.g. requests < visits for the same filter). Treat dashboard numbers as approximate.

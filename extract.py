@@ -9,6 +9,7 @@ YYYY-MM-DD to force-reload a single date.
 import argparse
 import os
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
@@ -29,10 +30,48 @@ ASSET_EXTENSIONS = {
     ".zip", ".tar", ".gz", ".rar", ".7z",
 }
 
+# Pattern → bot family. Order matters: more specific patterns must precede
+# substrings of themselves (e.g. Applebot-Extended before Applebot). Matching
+# is case-insensitive.
+BOT_FAMILIES = {
+    # AI user-triggered fetchers (real-time, on behalf of a user prompt)
+    "Claude-User":        "Claude-User",
+    "ChatGPT-User":       "ChatGPT-User",
+    "Perplexity-User":    "Perplexity-User",
+
+    # AI training crawlers
+    "Applebot-Extended":  "Applebot-Extended",
+    "Google-Extended":    "Google-Extended",
+    "Meta-ExternalAgent": "Meta-ExternalAgent",
+    "anthropic-ai":       "ClaudeBot",
+    "ClaudeBot":          "ClaudeBot",
+    "PerplexityBot":      "PerplexityBot",
+    "GPTBot":             "GPTBot",
+    "Bytespider":         "Bytespider",
+    "Amazonbot":          "Amazonbot",
+    "cohere-ai":          "cohere-ai",
+    "Diffbot":            "Diffbot",
+    "YouBot":             "YouBot",
+    "CCBot":              "CCBot",
+
+    # AI search bots
+    "OAI-SearchBot":      "OAI-SearchBot",
+
+    # Traditional search engines
+    "DuckDuckBot":        "DuckDuckBot",
+    "Baiduspider":        "Baiduspider",
+    "YandexBot":          "YandexBot",
+    "Applebot":           "Applebot",
+    "Googlebot":          "Googlebot",
+    "Bingbot":            "Bingbot",
+    "Slurp":              "Slurp",
+}
+
 SCHEMA = [
     bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
     bigquery.SchemaField("user_agent", "STRING", mode="REQUIRED"),
-    bigquery.SchemaField("verified_bot_category", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("bot_family", "STRING"),
+    bigquery.SchemaField("verified_bot_category", "STRING"),
     bigquery.SchemaField("path", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("requests", "INT64"),
 ]
@@ -88,18 +127,30 @@ def is_content_path(path: str) -> bool:
     return ext not in ASSET_EXTENSIONS
 
 
+def classify_bot_family(user_agent: str) -> Optional[str]:
+    """Map a user agent string to a bot family by substring match (case-insensitive)."""
+    ua = user_agent.lower()
+    for pattern, family in BOT_FAMILIES.items():
+        if pattern.lower() in ua:
+            return family
+    return None
+
+
 def to_rows(groups: list[dict]) -> list[dict]:
     rows = []
     for g in groups:
-        category = g["dimensions"]["verifiedBotCategory"] or ""
-        if not category:
+        ua = g["dimensions"]["userAgent"] or ""
+        category = g["dimensions"]["verifiedBotCategory"] or None
+        family = classify_bot_family(ua)
+        if not family and not category:
             continue
         path = g["dimensions"]["clientRequestPath"] or ""
         if not is_content_path(path):
             continue
         rows.append({
             "date": g["dimensions"]["date"],
-            "user_agent": g["dimensions"]["userAgent"] or "",
+            "user_agent": ua,
+            "bot_family": family,
             "verified_bot_category": category,
             "path": path,
             "requests": g["count"],
@@ -180,12 +231,12 @@ def main() -> None:
         groups = fetch(ds)
         print(f"  {len(groups)} groups returned")
         rows = to_rows(groups)
-        print(f"  {len(rows)} verified bot rows")
+        print(f"  {len(rows)} bot rows")
         if rows:
             load_to_bq(client, rows, ds)
             print(f"  Loaded {len(rows)} rows")
         else:
-            print("  No verified bot traffic — skipping load")
+            print("  No bot traffic — skipping load")
 
 
 if __name__ == "__main__":
