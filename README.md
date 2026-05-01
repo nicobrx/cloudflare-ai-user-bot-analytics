@@ -88,6 +88,12 @@ The two classification columns are independent and either, both, or neither can 
 
 OpenAI has registered ChatGPT-User but apparently not all of its egress IP ranges; Anthropic and Perplexity haven't registered their `-User` fetchers at all. Maintaining our own `bot_family` list ensures these fetchers are still captured, while `verified_bot_category` provides reliable, IP-confirmed coverage of bots that *are* registered (Googlebot, Bingbot, GPTBot, etc.) plus any verified bots not in our list.
 
+### Pre-filtering at the Cloudflare API
+
+`httpRequestsAdaptiveGroups` returns at most 10,000 (date × userAgent × path × category) rows per call. A busy day exceeds this easily — when it does, Cloudflare silently truncates and you lose rows, which produces under-counts (we hit this and missed ~half of Claude-User traffic for several days).
+
+To stay under the ceiling, the query pushes the bot filter into the API call as an `OR` over `verifiedBotCategory != ""` and a `userAgent_like %pattern%` clause for every entry in `BOT_FAMILIES`. Only matching rows count toward the 10,000 limit, so a full day of bot traffic typically returns ~3,000–5,000 rows. The script logs a warning if a day still hits the ceiling.
+
 ### Static asset filtering
 
 Requests for static assets (`.css`, `.js`, images, fonts, videos, archives) are filtered out and never written — the table only stores requests for pages and document-like content (HTML, PDF, TXT, XML, JSON, paths with no extension, etc.). The exclusion list lives in `ASSET_EXTENSIONS` in [extract.py](extract.py) and can be edited there.

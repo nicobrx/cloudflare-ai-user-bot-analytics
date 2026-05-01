@@ -77,13 +77,10 @@ SCHEMA = [
 ]
 
 QUERY = """
-query ($zoneTag: String, $startDate: Date, $endDate: Date) {
+query ($zoneTag: String, $filter: ZoneHttpRequestsAdaptiveGroupsFilter_InputObject!) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
-      httpRequestsAdaptiveGroups(
-        filter: {date_geq: $startDate, date_leq: $endDate}
-        limit: 10000
-      ) {
+      httpRequestsAdaptiveGroups(filter: $filter, limit: 10000) {
         count
         dimensions {
           date
@@ -97,6 +94,19 @@ query ($zoneTag: String, $startDate: Date, $endDate: Date) {
 }
 """
 
+# httpRequestsAdaptiveGroups returns at most 10000 (date × userAgent × path × category)
+# combinations per call. Without prefiltering, a busy day silently truncates rows. We
+# push the bot filter into the query so only bot traffic counts toward the limit.
+def build_filter(target_date: str) -> dict:
+    return {
+        "date_geq": target_date,
+        "date_leq": target_date,
+        "OR": [
+            {"verifiedBotCategory_neq": ""},
+            *[{"userAgent_like": f"%{pattern}%"} for pattern in BOT_FAMILIES],
+        ],
+    }
+
 
 def fetch(target_date: str) -> list[dict]:
     resp = requests.post(
@@ -106,8 +116,7 @@ def fetch(target_date: str) -> list[dict]:
             "query": QUERY,
             "variables": {
                 "zoneTag": CF_ZONE_ID,
-                "startDate": target_date,
-                "endDate": target_date,
+                "filter": build_filter(target_date),
             },
         },
     )
@@ -115,7 +124,10 @@ def fetch(target_date: str) -> list[dict]:
     body = resp.json()
     if errors := body.get("errors"):
         raise RuntimeError(f"Cloudflare API errors: {errors}")
-    return body["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"]
+    groups = body["data"]["viewer"]["zones"][0]["httpRequestsAdaptiveGroups"]
+    if len(groups) == 10000:
+        print(f"  WARNING: hit 10000-group ceiling for {target_date} — counts may be undercounted")
+    return groups
 
 
 def is_content_path(path: str) -> bool:
