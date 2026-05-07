@@ -30,41 +30,58 @@ ASSET_EXTENSIONS = {
     ".zip", ".tar", ".gz", ".rar", ".7z",
 }
 
-# Pattern → bot family. Order matters: more specific patterns must precede
-# substrings of themselves (e.g. Applebot-Extended before Applebot). Matching
-# is case-insensitive.
+# Pattern → bot family. Entries are alphabetized within each section. Matching
+# is case-insensitive. Cross-section ordering matters where one pattern is a
+# substring of another (e.g. Applebot-Extended in AI training crawlers must be
+# evaluated before Applebot in traditional search engines).
 BOT_FAMILIES = {
-    # AI user-triggered fetchers (real-time, on behalf of a user prompt)
-    "Claude-User":        "Claude-User",
+    # AI user-triggered fetchers and assistants (real-time, on behalf of a user prompt)
     "ChatGPT-User":       "ChatGPT-User",
+    "Claude-User":        "Claude-User",
+    "DuckAssistBot":      "DuckAssistBot",
     "Perplexity-User":    "Perplexity-User",
 
     # AI training crawlers
-    "Applebot-Extended":  "Applebot-Extended",
-    "Google-Extended":    "Google-Extended",
-    "Meta-ExternalAgent": "Meta-ExternalAgent",
-    "anthropic-ai":       "ClaudeBot",
-    "ClaudeBot":          "ClaudeBot",
-    "PerplexityBot":      "PerplexityBot",
-    "GPTBot":             "GPTBot",
-    "Bytespider":         "Bytespider",
     "Amazonbot":          "Amazonbot",
+    "anthropic-ai":       "ClaudeBot",
+    "Applebot-Extended":  "Applebot-Extended",
+    "Bytespider":         "Bytespider",
+    "CCBot":              "CCBot",
+    "ClaudeBot":          "ClaudeBot",
     "cohere-ai":          "cohere-ai",
     "Diffbot":            "Diffbot",
+    "Google-Extended":    "Google-Extended",
+    "GPTBot":             "GPTBot",
+    "Meta-ExternalAgent": "Meta-ExternalAgent",
+    "PerplexityBot":      "PerplexityBot",
+    "PetalBot":           "PetalBot",
     "YouBot":             "YouBot",
-    "CCBot":              "CCBot",
 
     # AI search bots
     "OAI-SearchBot":      "OAI-SearchBot",
 
     # Traditional search engines
-    "DuckDuckBot":        "DuckDuckBot",
-    "Baiduspider":        "Baiduspider",
-    "YandexBot":          "YandexBot",
     "Applebot":           "Applebot",
-    "Googlebot":          "Googlebot",
+    "Baiduspider":        "Baiduspider",
     "Bingbot":            "Bingbot",
+    "DuckDuckBot":        "DuckDuckBot",
+    "Googlebot":          "Googlebot",
+    "MojeekBot":          "MojeekBot",
+    "SeekportBot":        "SeekportBot",
+    "SeznamBot":          "SeznamBot",
     "Slurp":              "Slurp",
+    "YandexBot":          "YandexBot",
+    "Yeti":               "Yeti",
+
+    # SEO and marketing crawlers
+    "AhrefsBot":          "AhrefsBot",
+    "Barkrowler":         "Barkrowler",
+    "DataForSeoBot":      "DataForSeoBot",
+    "DotBot":             "DotBot",
+    "HubSpot":            "HubSpot",
+    "MJ12bot":            "MJ12bot",
+    "SemrushBot":         "SemrushBot",
+    "SiteAuditBot":       "SiteAuditBot",
 }
 
 SCHEMA = [

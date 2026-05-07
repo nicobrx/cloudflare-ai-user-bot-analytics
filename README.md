@@ -70,12 +70,13 @@ The two classification columns are independent and either, both, or neither can 
 
   | Category | Bots |
   |---|---|
-  | AI user-triggered fetchers | `Claude-User`, `ChatGPT-User`, `Perplexity-User` |
-  | AI training crawlers | `GPTBot`, `ClaudeBot` (matches `ClaudeBot` and `anthropic-ai`), `PerplexityBot`, `Google-Extended`, `Applebot-Extended`, `Meta-ExternalAgent`, `Bytespider`, `Amazonbot`, `cohere-ai`, `Diffbot`, `YouBot`, `CCBot` |
+  | AI user-triggered fetchers and assistants | `ChatGPT-User`, `Claude-User`, `DuckAssistBot`, `Perplexity-User` |
+  | AI training crawlers | `Amazonbot`, `Applebot-Extended`, `Bytespider`, `CCBot`, `ClaudeBot` (also matches `anthropic-ai`), `cohere-ai`, `Diffbot`, `Google-Extended`, `GPTBot`, `Meta-ExternalAgent`, `PerplexityBot`, `PetalBot`, `YouBot` |
   | AI search bots | `OAI-SearchBot` |
-  | Traditional search engines | `Googlebot`, `Bingbot`, `DuckDuckBot`, `YandexBot`, `Baiduspider`, `Applebot`, `Slurp` |
+  | Traditional search engines | `Applebot`, `Baiduspider`, `Bingbot`, `DuckDuckBot`, `Googlebot`, `MojeekBot`, `SeekportBot`, `SeznamBot`, `Slurp`, `YandexBot`, `Yeti` |
+  | SEO and marketing crawlers | `AhrefsBot`, `Barkrowler`, `DataForSeoBot`, `DotBot`, `HubSpot`, `MJ12bot`, `SemrushBot`, `SiteAuditBot` |
 
-  To track a new bot, add a `(pattern → family)` entry to the dict in [extract.py](extract.py). Matching is case-insensitive and substring-based, so list more specific patterns (e.g. `Applebot-Extended`) before any patterns they contain (e.g. `Applebot`).
+  To track a new bot, add a `(pattern → family)` entry to the dict in [extract.py](extract.py), keeping each section alphabetized. Matching is case-insensitive and substring-based, so a pattern that's a prefix of another (e.g. `Applebot` vs. `Applebot-Extended`) must live in a section that's evaluated *after* the more specific one — the current layout already handles this by placing `Applebot-Extended` in the AI-training-crawlers section above `Applebot` in traditional search engines.
 - **`verified_bot_category`** comes from Cloudflare's [public verified-bot list](https://radar.cloudflare.com/bots#verified-bots). Cloudflare only verifies bots whose operators have explicitly registered with the program (publishing IP ranges or domain claims); for those, Cloudflare reverse-DNS-checks each request's client IP and tags it with a category like `Search Engine Crawler`, `AI Crawler`, `AI Assistant`, or `Academic Research`. Bot UAs whose operators have not registered (which currently includes Claude-User and Perplexity-User) are never tagged, regardless of source IP.
 
 **Why both?** Cloudflare's verified-bot program is opt-in for operators, so its coverage of newer AI fetchers is incomplete. A diagnostic against the API showed:
